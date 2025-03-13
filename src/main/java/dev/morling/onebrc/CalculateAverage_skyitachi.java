@@ -29,18 +29,32 @@ public class CalculateAverage_skyitachi {
     private static int currentOffset = 0;
     private static boolean isInKey = true;
 
-    public static void main(String []args) throws IOException {
+    public static void main(String[] args) throws IOException {
         try (RandomAccessFile raf = new RandomAccessFile(String.valueOf(FILE), "r")) {
             FileChannel channel = raf.getChannel();
             ByteBuffer buffer = ByteBuffer.allocate(4096);
             channel.read(buffer);
             parseBlock(buffer);
         }
-        for(Map.Entry<String, double[]> entry : stats.entrySet()) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{");
+        boolean first = true;
+        for (Map.Entry<String, double[]> entry : stats.entrySet()) {
             double[] values = entry.getValue();
             double avg = values[0] / values[1];
-            System.out.println(entry.getKey() + ": " + avg + ", max: " + values[2] + ", min: " + values[3]);
+            if (!first) {
+                sb.append(", ");
+            }
+            else {
+                first = false;
+            }
+            sb.append(entry.getKey())
+                    .append("=").append(round(values[3])).append("/")
+                    .append(round(avg)).append("/")
+                    .append(round(values[2]));
         }
+        sb.append("}");
+        System.out.println(sb);
     }
 
     /**
@@ -50,7 +64,6 @@ public class CalculateAverage_skyitachi {
         while (buffer.hasRemaining()) {
             byte b = buffer.get();
             if (b == NEW_LINE) {
-                // 判断是否要parse left buffer里的数据
                 String valueString = new String(parseBuffer, 0, currentOffset);
                 currentValue = Double.parseDouble(valueString);
                 if (stats.containsKey(currentKey)) {
@@ -63,7 +76,8 @@ public class CalculateAverage_skyitachi {
                     if (currentValue < values[3]) {
                         values[3] = currentValue;
                     }
-                } else {
+                }
+                else {
                     double[] values = new double[4];
                     values[0] = currentValue;
                     values[1] = 1;
@@ -72,13 +86,16 @@ public class CalculateAverage_skyitachi {
                     stats.put(currentKey, values);
                 }
                 isInKey = true;
-            } else if (b == COLON) {
+                currentOffset = 0;
+            }
+            else if (b == COLON) {
                 if (isInKey) {
-                  currentKey = new String(parseBuffer, 0, currentOffset);
-                  isInKey = false;
-                  currentOffset = 0;
+                    currentKey = new String(parseBuffer, 0, currentOffset);
+                    isInKey = false;
+                    currentOffset = 0;
                 }
-            } else {
+            }
+            else {
                 parseBuffer[currentOffset] = b;
                 currentOffset++;
             }
@@ -86,6 +103,8 @@ public class CalculateAverage_skyitachi {
         buffer.flip();
     }
 
-
+    private static String round(double value) {
+        return String.format("%.1f", value);
+    }
 
 }
