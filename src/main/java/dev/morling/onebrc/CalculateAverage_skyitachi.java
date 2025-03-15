@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 /**
  * @author yaosp@trip.com
@@ -33,23 +34,47 @@ public class CalculateAverage_skyitachi {
         public double currentValue = 0;
         public int currentOffset = 0;
         public boolean isInKey = true;
+        public int sign = 1;
+        public double acc = 0;
+    }
+
+    public static void main1(String[] args) throws IOException {
+        RandomAccessFile firstFile = new RandomAccessFile(FILE.toFile(), "r");
+        List<Long> r1 = split(firstFile, 1);
+        System.out.println(r1.stream().map(Object::toString).collect(Collectors.joining(",")));
+        List<Long> r2 = split(firstFile, 2);
+        System.out.println(r2.stream().map(Object::toString).collect(Collectors.joining(",")));
+        System.out.println(split(firstFile, 3).stream().map(Object::toString).collect(Collectors.joining(",")));
+        System.out.println(split(firstFile, 4).stream().map(Object::toString).collect(Collectors.joining(",")));
+        System.out.println(split(firstFile, NUM_OF_THREADS).stream().map(Object::toString).collect(Collectors.joining(",")));
     }
 
     public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
-        CopyOnWriteArrayList<Map<String, double[]>> results = new CopyOnWriteArrayList<>();
-        // int threads = Runtime.getRuntime().availableProcessors();
-        int threads = 1;
-        ExecutorService executor = Executors.newFixedThreadPool(threads);
+        CopyOnWriteArrayList<RandomAccessFile> openedFiles = new CopyOnWriteArrayList<>();
+        ExecutorService executor = Executors.newFixedThreadPool(NUM_OF_THREADS);
         List<Future<Map<String, double[]>>> futures = new ArrayList<>();
-        try (RandomAccessFile raf = new RandomAccessFile(FILE.toFile(), "rw")) {
-            FileChannel channel = raf.getChannel();
-            long end = channel.size();
+        RandomAccessFile firstFile = new RandomAccessFile(FILE.toFile(), "r");
+        openedFiles.add(firstFile);
+        List<Long> offsets = split(firstFile, NUM_OF_THREADS);
+        long prevOffset = 0;
+        for (long offset : offsets) {
+            long start = prevOffset;
+            prevOffset = offset;
             Future<Map<String, double[]>> future = executor.submit(() -> {
-                return parseSingleThread(channel, 0, end);
+                RandomAccessFile raf = null;
+                try {
+                    raf = new RandomAccessFile(FILE.toFile(), "rw");
+                    FileChannel channel = raf.getChannel();
+                    openedFiles.add(raf);
+                    return parseSingleThread(channel, start, offset);
+                }
+                catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
             });
             futures.add(future);
         }
-        Map<String, double[]> finalResults = futures.get(0).get();
+        Map<String, double[]> finalResults = futures.getFirst().get();
         for (int i = 1; i < futures.size(); i++) {
             Map<String, double[]> singleResult = futures.get(i).get();
             for (Map.Entry<String, double[]> entry : singleResult.entrySet()) {
@@ -90,7 +115,10 @@ public class CalculateAverage_skyitachi {
         }
         sb.append("}");
         System.out.println(sb);
-
+        for (RandomAccessFile raf : openedFiles) {
+            raf.close();
+        }
+        executor.shutdown();
     }
 
     public static void parseSingleThread() throws IOException {
@@ -156,8 +184,8 @@ public class CalculateAverage_skyitachi {
         while (buffer.hasRemaining()) {
             byte b = buffer.get();
             if (b == NEW_LINE) {
-                String valueString = new String(state.parseBuffer, 0, state.currentOffset);
-                state.currentValue = Double.parseDouble(valueString);
+                // String valueString = new String(state.parseBuffer, 0, state.currentOffset);
+                state.currentValue = state.sign * state.acc / 10;
                 if (state.stats.containsKey(state.currentKey)) {
                     double[] values = state.stats.get(state.currentKey);
                     values[0] += state.currentValue;
@@ -179,17 +207,29 @@ public class CalculateAverage_skyitachi {
                 }
                 state.isInKey = true;
                 state.currentOffset = 0;
+                state.acc = 0;
+                state.sign = 1;
             }
             else if (b == COLON) {
                 if (state.isInKey) {
                     state.currentKey = new String(state.parseBuffer, 0, state.currentOffset);
                     state.isInKey = false;
                     state.currentOffset = 0;
+                    state.acc = 0.0;
+                    state.sign = 1;
                 }
             }
             else {
-                state.parseBuffer[state.currentOffset] = b;
-                state.currentOffset++;
+                if (state.isInKey) {
+                    state.parseBuffer[state.currentOffset] = b;
+                    state.currentOffset++;
+                }
+                else if (b == HYPHEN) {
+                    state.sign = -1;
+                }
+                else if (b != DOT) {
+                    state.acc = state.acc * 10 + (b - '0');
+                }
             }
         }
         buffer.clear();
@@ -199,4 +239,46 @@ public class CalculateAverage_skyitachi {
         return String.format("%.1f", value);
     }
 
+    public static List<Long> split(RandomAccessFile randomAccessFile, int threads) throws IOException {
+        FileChannel channel = randomAccessFile.getChannel();
+        long sz = channel.size();
+        List<Long> result = new ArrayList<>();
+        long groupSize = sz / threads;
+        long offset = groupSize;
+        ByteBuffer buffer = ByteBuffer.allocate(4096);
+        while (offset <= sz) {
+            channel.position(offset);
+            buffer.clear();
+            int rz = channel.read(buffer);
+            if (rz <= 0) {
+                result.add(offset);
+                break;
+            }
+            buffer.flip();
+            while (buffer.hasRemaining()) {
+                offset++;
+                if (buffer.get() == NEW_LINE) {
+                    break;
+                }
+            }
+            result.add(offset);
+            offset += groupSize;
+            if (offset >= sz) {
+                offset = sz;
+            }
+        }
+        if (result.size() == threads) {
+            result.set(result.size() - 1, sz);
+        }
+        for (long innerOffset : result) {
+            channel.position(innerOffset - 1);
+            buffer.clear();
+            channel.read(buffer);
+            buffer.flip();
+            if (buffer.get() != NEW_LINE) {
+                System.out.printf("offset %d is wrong\n", offset);
+            }
+        }
+        return result;
+    }
 }
